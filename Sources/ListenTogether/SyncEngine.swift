@@ -84,6 +84,10 @@ final class SyncEngine: ObservableObject {
     private var suppressUntil = Date.distantPast
     private var lastCorrection = Date.distantPast
     private var pendingRemote: SharedState?
+    /// The room's state couldn't be followed yet (e.g. the player was still
+    /// loading right after joining): try again at this time.
+    private var followRetryAt: Date?
+    private var followFailures = 0
     private var applying = false
     private var ticking = false
     private var loop: Task<Void, Never>?
@@ -149,6 +153,8 @@ final class SyncEngine: ObservableObject {
             return
         }
         shared = nil
+        followRetryAt = nil
+        followFailures = 0
         queue = SharedQueue()
         Self.defaults.set(true, forKey: "inRoom")
         relay.connect(to: url)
@@ -292,8 +298,13 @@ final class SyncEngine: ObservableObject {
             shared = s
             do {
                 try await apply(s)
+                followRetryAt = nil
+                followFailures = 0
             } catch {
-                note("Couldn't follow: \(error.localizedDescription)")
+                // Say it once; keep trying quietly while this is the room's state.
+                if followFailures == 0 { note("Couldn't follow yet: \(error.localizedDescription). Trying again…") }
+                followFailures += 1
+                followRetryAt = Date().addingTimeInterval(min(10, 2 * Double(followFailures)))
             }
         }
         applying = false
@@ -376,6 +387,12 @@ final class SyncEngine: ObservableObject {
             let snap = try await p.snapshot()
             guard p === player, !applying else { return }
             local = snap
+            if let at = followRetryAt, Date() >= at, snap.ready, pendingRemote == nil {
+                followRetryAt = nil
+                // Still the room's state and from someone else: follow it now
+                // (picked up by drainRemote when this tick ends).
+                if let s = shared, s.from != myId { pendingRemote = s; return }
+            }
             if service == .appleMusic, snap.ready { await syncAppleVolume(snap) }
             if Self.debug {
                 let line = "player \(service.rawValue) ready=\(snap.ready) track=\(snap.track?.title ?? "-") playing=\(snap.playing) volume=\(snap.volume.map { String(format: "%.2f", $0) } ?? "-") slider=\(String(format: "%.2f", appleVolume))"
@@ -460,6 +477,8 @@ final class SyncEngine: ObservableObject {
                             queue: queue.items, removed: queue.removed)
         let previous = shared
         shared = s
+        followRetryAt = nil
+        followFailures = 0
         guard relayStatus == .connected else { return }
         relay.send(s)
         if quiet { return }

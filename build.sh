@@ -1,7 +1,13 @@
 #!/bin/bash
-# Builds ListenTogether.app into ./build.
+# Builds ListenTogether.app (universal: Apple silicon and Intel).
+#   ./build.sh            build/ListenTogether.app + build/ListenTogether.zip, version "dev"
+#   OUT=dir ./build.sh    the same into another folder (e.g. while build/ is running)
+#   ./build.sh 1.2.0      for a GitHub release: dist/ListenTogether-1.2.0-macos.zip,
+#                         and prints its SHA-256
 set -euo pipefail
 cd "$(dirname "$0")"
+
+VERSION="${1:-}"
 
 # Embed the JavaScript bridges as Swift string literals.
 gen=Sources/ListenTogether/EmbeddedJS.swift
@@ -24,14 +30,14 @@ arch=(--arch arm64 --arch x86_64)
 swift build -c release "${arch[@]}" --product ListenTogether
 
 # OUT=dir ./build.sh builds somewhere else (e.g. while the app in build/ is running).
-out=${OUT:-build}
+if [ -n "$VERSION" ]; then out=dist; rm -rf dist; else out=${OUT:-build}; fi
 app=$out/ListenTogether.app
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$(swift build -c release "${arch[@]}" --show-bin-path)/ListenTogether" "$app/Contents/MacOS/"
 [ -f AppIcon.icns ] && cp AppIcon.icns "$app/Contents/Resources/"
 
-cat > "$app/Contents/Info.plist" <<'PLIST'
+cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -41,8 +47,8 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
   <key>CFBundleIdentifier</key><string>app.listentogether.mac</string>
   <key>CFBundleExecutable</key><string>ListenTogether</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>1.0</string>
-  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>${VERSION:-0.0.0-dev}</string>
+  <key>CFBundleVersion</key><string>${VERSION:-0.0.0}</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.music</string>
@@ -63,6 +69,11 @@ codesign --force --sign - "$app"
 echo "Built $app"
 
 # Zip to share (ditto keeps the bundle's signature and attributes intact).
-rm -f "$out/ListenTogether.zip"
-ditto -c -k --keepParent "$app" "$out/ListenTogether.zip"
-echo "Packed $out/ListenTogether.zip"
+zip=$out/ListenTogether${VERSION:+-$VERSION-macos}.zip
+rm -f "$zip"
+ditto -c -k --keepParent "$app" "$zip"
+echo "Packed $zip"
+if [ -n "$VERSION" ]; then
+  rm -rf "$app"
+  shasum -a 256 "$zip"
+fi

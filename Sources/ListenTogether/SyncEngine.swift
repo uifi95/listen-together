@@ -396,6 +396,7 @@ final class SyncEngine: ObservableObject {
     private func detectChanges(_ snap: PlayerSnapshot) async {
         let now = Date()
         let base = baseline
+        if Self.waitsForLoad(base: base, snap: snap) { return }
         let dt = Int(now.timeIntervalSince(baselineTime) * 1000)
         baseline = snap
         baselineTime = now
@@ -437,6 +438,14 @@ final class SyncEngine: ObservableObject {
         } else {
             await correctDrift(snap)
         }
+    }
+
+    /// A different song that is still loading: keep the last settled state
+    /// as the baseline, so the change is noticed once it plays. Taking the
+    /// loading snapshot as the baseline would hide it (e.g. the first song
+    /// someone starts in an idle room never reached the other person).
+    nonisolated static func waitsForLoad(base: PlayerSnapshot?, snap: PlayerSnapshot) -> Bool {
+        snap.loading && (base == nil || snap.track?.id != base?.track?.id)
     }
 
     private func queueOverdue() -> Bool {

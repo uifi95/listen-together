@@ -271,8 +271,9 @@ final class SyncEngine: ObservableObject {
         for id in before where !after.contains(where: { $0.id == id }) { note("Someone left") }
         // Someone new arrived: bring them to what's playing here. (The
         // newcomer doesn't do this, so the person already in the room leads.)
-        if after.contains(where: { !before.contains($0.id) }), local.track != nil, !applying {
-            publish(local, quiet: true)
+        if after.contains(where: { !before.contains($0.id) }) {
+            LogFile.write("newcomer: local \(local.track?.title ?? "-") applying=\(applying)")
+            if local.track != nil, !applying { publish(local, quiet: true) }
         }
     }
 
@@ -285,8 +286,10 @@ final class SyncEngine: ObservableObject {
         if Self.debug && (!fresh.isEmpty || !(state.removed ?? []).isEmpty) {
             print("queue: \(queue.items.map { $0.track.title }.joined(separator: " | "))"); fflush(stdout)
         }
+        LogFile.write("state in: \(Self.describe(state)) (from \(state.fromName ?? "?"))")
         if let mine = shared, mine.at > state.at, mine.from == myId {
             // Ours is newer; the other side will follow ours.
+            LogFile.write("state ignored: ours is newer (\(Self.describe(mine)))")
             return
         }
         pendingRemote = state
@@ -300,8 +303,10 @@ final class SyncEngine: ObservableObject {
         while let s = pendingRemote {
             pendingRemote = nil
             shared = s
+            LogFile.write("following: \(Self.describe(s))")
             do {
                 try await apply(s)
+                LogFile.write("followed")
                 followRetryAt = nil
                 followFailures = 0
             } catch {
@@ -324,6 +329,7 @@ final class SyncEngine: ObservableObject {
             return
         }
         let snap = try await player.snapshot()
+        LogFile.write("apply: local \(snap.track?.title ?? "-") ready=\(snap.ready) playing=\(snap.playing)")
         if Matcher.isSame(snap.track, target) {
             if s.playing != snap.playing {
                 note("\(who) \(s.playing ? "pressed play" : "paused")")
@@ -343,7 +349,9 @@ final class SyncEngine: ObservableObject {
             match = target
         } else {
             playerStatus = "Finding it on \(service.displayName)…"
-            match = Matcher.best(for: target, in: try await player.candidates(for: target))
+            let found = try await player.candidates(for: target)
+            match = Matcher.best(for: target, in: found)
+            LogFile.write("apply: \(found.count) candidates, match \(match?.title ?? "none")")
         }
         guard let match else {
             note("Couldn't find \(target.summary) on \(service.displayName)")
@@ -351,6 +359,7 @@ final class SyncEngine: ObservableObject {
             return
         }
         try await player.load(match, positionMs: s.expectedPosition(atRelayTime: relay.relayNow), play: s.playing)
+        LogFile.write("apply: loaded \(match.id)")
         playerStatus = "Connected to \(service.displayName)"
     }
 
@@ -387,7 +396,9 @@ final class SyncEngine: ObservableObject {
         do {
             if !playerConnected {
                 playerStatus = "Connecting to \(service.displayName)…"
+                LogFile.write("player: connecting to \(service.displayName)")
                 try await p.connect()
+                LogFile.write("player: connected")
                 guard p === player else { return }
                 playerConnected = true
                 playerStatus = "Connected to \(service.displayName)"
@@ -419,6 +430,7 @@ final class SyncEngine: ObservableObject {
             playerConnected = false
             local = PlayerSnapshot(ready: false)
             playerStatus = error.localizedDescription
+            LogFile.write("player error: \(error.localizedDescription)")
             try? await Task.sleep(nanoseconds: 2_000_000_000)
         }
     }
@@ -499,6 +511,10 @@ final class SyncEngine: ObservableObject {
         refollowed.count += 1
         emptySince = nil
         return s
+    }
+
+    static func describe(_ s: SharedState) -> String {
+        "\(s.track?.title ?? "no song") \(s.playing ? "playing" : "paused") at \(time(s.positionMs)), at=\(Int(s.at)), queue \(s.queue?.count ?? 0)"
     }
 
     private func queueOverdue() -> Bool {
@@ -721,6 +737,7 @@ final class SyncEngine: ObservableObject {
 
     func note(_ text: String) {
         if Self.debug { print("note: \(text)"); fflush(stdout) }
+        LogFile.write("note: \(text)")
         log.append(LogLine(text: text))
         if log.count > 50 { log.removeFirst(log.count - 50) }
     }

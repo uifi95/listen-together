@@ -23,8 +23,6 @@ cask "listen-together" do
   homepage "https://github.com/uifi95/listen-together"
 
   depends_on macos: ">= :sonoma"
-  # Creating a room opens a Cloudflare quick tunnel.
-  depends_on formula: "cloudflared"
 
   app "ListenTogether.app"
 

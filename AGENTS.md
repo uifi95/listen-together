@@ -12,6 +12,7 @@ swift test                    # unit tests (needs EmbeddedJS.swift -> run ./buil
 
 - `Sources/ListenTogether/EmbeddedJS.swift` is **generated** by `build.sh` from `js/` and is gitignored. Edit the files in `js/`, never the generated file. On a fresh clone, run `./build.sh` before `swift build`/`swift test`.
 - Release: push a `v<version>` tag. `.github/workflows/release.yml` runs `./build.sh <version>` (→ `dist/ListenTogether-<version>-macos.zip`, version written into Info.plist), `swift test`, `gh release create --generate-notes`, and pushes the cask from `packaging/cask.sh` to `uifi95/homebrew-tap` (needs the `HOMEBREW_TAP_TOKEN` secret). Same scheme as the sibling project `qobuz-now-playing`. Work goes through feature branches and PRs (`feat:` / `fix:` / `docs:` commit prefixes).
+- `build.sh` bundles `cloudflared` (pinned `CF_VERSION`, SHA-256 checked, arm64+amd64 merged with `lipo`, cached in `.build/`) into `Contents/Helpers/`. To update it, change `CF_VERSION` and both `CF_SHA_*` (the digests are on the GitHub release assets). It adds ~40 MB to the zip.
 - Toolchain: Swift tools version 5.10, built with a Swift 6 toolchain. Ad-hoc signed (`codesign --sign -`), no notarization; recipients must right-click → Open the first time.
 - Env vars: `LT_PROFILE=<name>` (separate UserDefaults suite, to run two copies on one Mac), `LT_DEBUG=1` (prints player state to stdout), `LT_TEST_DIR=<dir>` (test-command hook; also hides windows).
 - CLI mode: `ListenTogether --host-room "Name"` hosts a room (relay + tunnel) without the player.
@@ -36,7 +37,7 @@ SyncEngine (MainActor, ObservableObject) ── RelayClient (URLSessionWebSocket
 | `AppleMusicPlayer.swift` | Hidden window with WKWebView (Safari UA, FairPlay), sign-in popups, `callAsyncJavaScript` bridge, volume restore after reload. |
 | `RelayClient.swift` | WebSocket with reconnect (backoff ≤10 s), ping/pong clock offset (min RTT sample). |
 | `HostServer.swift` | Hand-written HTTP + WebSocket server on 127.0.0.1 (the in-app relay). Serves the invite page, `/download`, and the room socket; rejects wrong room codes. Also `InviteLink` parsing. |
-| `CloudflareTunnel.swift` | Runs `cloudflared tunnel --url`, parses the trycloudflare URL, waits for "Registered tunnel connection" and for public DNS (DoH) before handing out the link. |
+| `CloudflareTunnel.swift` | Runs `cloudflared tunnel --url` (the copy bundled in `Contents/Helpers`, else one on PATH), parses the trycloudflare URL, waits for "Registered tunnel connection" and for public DNS (DoH) before handing out the link. |
 | `CDPClient.swift` | Minimal Chrome DevTools Protocol client (`Runtime.evaluate`, `awaitPromise`). |
 | `ListenTogetherApp.swift` | `@main`, AppDelegate (URL scheme `listentogether://`, window close doesn't quit), menus (⌘⇧P player, ⌘↑/⌘↓ Apple volume), `HostCLI`. |
 | `ContentView.swift` | SwiftUI UI: service picker, Create Room / Join with Link / Own Relay tabs, now playing, Up Next list, activity log. |

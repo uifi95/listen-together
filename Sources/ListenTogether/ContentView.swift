@@ -235,6 +235,13 @@ struct ContentView: View {
                      : "Click Show Player, then pick a song in Apple Music. Your partner will follow.")
                     .font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                if !engine.queue.isEmpty {
+                    Button { engine.skipToNext() } label: {
+                        Label("Play Up Next", systemImage: "play.circle.fill")
+                    }
+                    .help("Play the first song in the shared queue for everyone")
+                }
+                if engine.service == .appleMusic { volumeControl }
             }
         }
     }

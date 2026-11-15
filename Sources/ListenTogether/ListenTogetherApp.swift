@@ -25,6 +25,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var signalSources: [DispatchSourceSignal] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        LogFile.write("--- ListenTogether \(version) started")
         // `kill`, logout and Ctrl-C quit normally, so a hosted room's tunnel
         // is stopped instead of left running.
         for sig in [SIGTERM, SIGINT, SIGHUP] {
@@ -67,6 +69,7 @@ struct ListenTogetherApp: App {
             CommandGroup(after: .windowArrangement) {
                 Button("Apple Music Player") { appDelegate.engine.apple.showWindow() }
                     .keyboardShortcut("p", modifiers: [.command, .shift])
+                Button("Show Log File") { NSWorkspace.shared.activateFileViewerSelecting([LogFile.url]) }
             }
             CommandMenu("Volume") {
                 Button("Apple Music Louder") { appDelegate.engine.nudgeAppleVolume(by: 0.1) }

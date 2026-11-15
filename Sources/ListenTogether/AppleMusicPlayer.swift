@@ -121,9 +121,34 @@ final class AppleMusicPlayer: NSObject, MusicPlayer, WKNavigationDelegate, WKUID
     func play() async throws { _ = try await call("play") }
     func pause() async throws { _ = try await call("pause") }
 
-    func queueKeys() async throws -> [String] {
-        (try await call("queueKeys") as? [String]) ?? []
+    func queueState() async throws -> AppQueue {
+        guard let d = try await call("queueState") as? [String: Any] else { return AppQueue() }
+        return AppQueue(keys: d["keys"] as? [String] ?? [], upcoming: d["upcoming"] as? [String] ?? [],
+                        current: d["current"] as? String)
     }
+
+    func addToQueue(_ tracks: [TrackInfo], next: Bool) async throws -> [String: String] {
+        guard !tracks.isEmpty,
+              let d = try await call("addToQueue", ["ids": tracks.map(\.id), "next": next]) as? [String: Any] else { return [:] }
+        if let error = d["error"] as? String { throw PlayerError(error) }
+        var out: [String: String] = [:]
+        for a in d["added"] as? [[String: Any]] ?? [] {
+            if let id = a["id"] as? String, let key = a["key"] as? String, out[id] == nil { out[id] = key }
+        }
+        return out
+    }
+
+    func removeFromQueue(_ keys: [String]) async throws -> Bool {
+        let d = try await call("removeFromQueue", keys) as? [String: Any]
+        return d?["ok"] as? Bool ?? false
+    }
+
+    func playQueued(_ key: String, in queue: AppQueue) async throws -> Bool {
+        let d = try await call("playQueued", key) as? [String: Any]
+        return d?["ok"] as? Bool ?? false
+    }
+
+    func skipToNext() async throws { _ = try await call("next") }
 
     func queueTracks(_ keys: [String]) async throws -> [String: TrackInfo?] {
         guard !keys.isEmpty, let dict = try await call("queueTracks", keys) as? [String: Any] else { return [:] }
@@ -141,8 +166,8 @@ final class AppleMusicPlayer: NSObject, MusicPlayer, WKNavigationDelegate, WKUID
     func seek(toMs ms: Int) async throws { _ = try await call("seek", ms) }
 
     /// Test hook (LT_TEST_DIR): run JavaScript in the page.
-    func evaluateForTest(_ js: String) async throws {
-        _ = try await webView.callAsyncJavaScript(js, arguments: [:], in: nil, contentWorld: .page)
+    func evaluateForTest(_ js: String) async throws -> Any? {
+        try await webView.callAsyncJavaScript(js, arguments: [:], in: nil, contentWorld: .page)
     }
 
     func authorize() async throws {

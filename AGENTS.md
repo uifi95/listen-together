@@ -34,7 +34,7 @@ SyncEngine (MainActor, ObservableObject) ── RelayClient (URLSessionWebSocket
 | --- | --- |
 | `SyncEngine.swift` | Core. Settings, room lifecycle (create/join/leave), receiving remote state, 500 ms `tick` that polls the local player, detects local changes, corrects drift, watches the app's queue, advances the shared queue, Apple volume. |
 | `Models.swift` | `TrackInfo`, `PlayerSnapshot`, `SharedState` (the wire format), `MusicPlayer` protocol, `Matcher` (cross-service track matching). |
-| `SharedQueue.swift` | `QueueItem`, `SharedQueue` (mergeable queue), `QueueDiff.additions` (detects Add to Queue vs Play Next from key lists). |
+| `SharedQueue.swift` | `QueueItem`, `SharedQueue` (mergeable queue), `QueueDiff.additions` (detects Add to Queue vs Play Next from key lists), `QueueMirror` (which app queue item is the copy of which shared item). |
 | `QobuzPlayer.swift` | Sends SIGUSR1 to Qobuz, finds the inspector port via `lsof`, installs the JS bridges over CDP, `call(name, arg)`. |
 | `AppleMusicPlayer.swift` | Hidden window with WKWebView (Safari UA, FairPlay), sign-in popups, `callAsyncJavaScript` bridge, volume restore after reload. |
 | `RelayClient.swift` | WebSocket with reconnect (backoff ≤10 s), ping/pong clock offset (min RTT sample). |
@@ -53,18 +53,23 @@ SyncEngine (MainActor, ObservableObject) ── RelayClient (URLSessionWebSocket
 - **Shared timeline**: `SharedState` = track + playing + positionMs at relay-clock time `at`, plus `from`/`fromName`, `queue`, `removed`. Last writer wins. When someone joins, whoever is already in the room leads.
 - **Clock**: offset from the ping with the smallest round trip. All times on the wire are relay-clock.
 - **Local change detection**: polling every 500 ms (no events from Qobuz). Guards `ticking` / `applying` prevent echoing a remote change back as a local one.
-- **Drift**: seek when off by more than 1.2 s.
+- **Drift**: seek when off by more than 1.2 s. Only an actual correction sets `suppressUntil` (it used to on every in-sync tick, which hid user changes). While suppressed, seeks and play/pause flips are ignored, but a switch to a song that isn't the room's still counts.
 - **Matching** (`Matcher`): ISRC first, then normalized title + artist + duration, score ≥ 5. Rejects live/remix/cover variants that reuse an ISRC.
 - **Volume is never synced** (explicit user decision). Apple volume is local only, cubic taper (`gain = position³`), saved and re-applied when the web player reloads (MusicKit resets to 0.5).
 
 ## Shared queue
 
 - `SharedQueue` is CRDT-like: items = union of everything added minus removed ids (`removed` keeps the last 500). Order is **computed**, not stored: Play Next items first (newest first), then Add to Queue items (oldest first), then `seq`, then `id`. So copies converge regardless of message order.
-- Each player exposes `queueKeys()` (stable per-item keys in play order) and a `queueVersion` in its snapshot. `watchAppQueue` diffs keys when the version changes: `QueueDiff.additions` treats new keys followed by old keys as **Play Next**, new keys at the end as **Add to Queue**, and a queue with nothing in common with the previous one as a replacement (not queueing).
+- Each player exposes `queueState()` (`AppQueue`: stable per-item `keys`, the `upcoming` keys in play order, the `current` key) and a `queueVersion` in its snapshot (bumped on item and position changes). `watchAppQueue` diffs keys when the version changes: `QueueDiff.additions` treats new keys followed by old keys as **Play Next**, new keys at the end as **Add to Queue**, and a queue with nothing in common with the previous one as a replacement (not queueing).
   - Qobuz key: `queueItemId|trackId|contextUuid`. Add to Queue = `completeQueue` (append, new context); Play Next = `insertIntoQueue` (after current, new context).
   - Apple key: WeakMap id per MusicKit queue item object (objects survive appends, are recreated on replace). Only `queue.userAddedItems` (autoplay ∞ songs are left out). The order can't tell Play Next from Add to Queue there (shared songs start as a one-song queue; Add to Queue goes in before the autoplay songs), so `js/apple.js` wraps the instance's `playNext`/`playLater` and reports how each item was added; `MusicPlayer.addedAsPlayNext` overrides the diff's guess. Items already at or before the queue position (the web app's "Play" = Play Next + skip) aren't additions.
-- When the shared track ends (within 3 s of its duration, or >4 s overdue), `playFromQueue` plays the first item for everyone. Each side resolves it on its own service.
-- Known limitation: Play Next on the last song of a Qobuz queue looks identical to Add to Queue. No drag reordering.
+- **Mirror** (`QueueMirror` in `SharedQueue.swift`, driven by `SyncEngine.mirrorQueue`/`appQueueChanged`): each app's own upcoming queue holds a copy of the shared queue. `keyFor` maps shared item id → app queue key.
+  - Room → app: shared items without a copy are resolved on this service (`Matcher`, cached in `resolved`, `unavailable` if not found) and added with `addToQueue` (Play Next items after the current song, others at the end). Apple returns the new keys at once. Qobuz adds them a moment later, so `pending` writes are claimed by local track id when `watchAppQueue` sees them (retried once, then given up). Copies of items that left the shared queue are removed (`removeFromQueue`). Qobuz can't remove: the keys go to `stale` and are skipped when they come up.
+  - App → room: a mapped key that leaves `upcoming` is played (it's now `current` → `advancedInto`, announced by `announceAdvance` as the room's song), skipped (still in `keys`), or removed. A queue with nothing in common with the previous one was replaced (new song or album): the mapping is dropped and the shared items are added again, nothing is removed.
+  - Following a remote song that is in the app's upcoming queue jumps there (`playQueued`: Apple `changeToMediaAtIndex`; Qobuz only the next item, via its "next" media key) instead of loading it, which would replace the queue.
+  - Qobuz writes: `js/qobuz-page.js` dispatches Qobuz's own `INSERT_INTO_PLAYQUEUE_FROM_RELEASE_EPIC` / `COMPLETE_PLAYQUEUE_FROM_RELEASE_EPIC` / `REPLACE_PLAYQUEUE_FROM_RELEASE_EPIC` with a marked release id (`<album>ltq<n>`). Its `fetch` wrapper answers that `album/get` request with the real album whose `track_ids` are swapped for the wanted tracks. (Qobuz's queue thunks need its player singleton, which isn't reachable from outside.) `QobuzPlayer.load` plays a single track this way (so the room's queue follows it, not the rest of the album) and falls back to the album if that doesn't switch within 3 s.
+- When the shared track ends (within 3 s of its duration, or >4 s overdue) and the app didn't move on into its copy of the queue, `playFromQueue` plays the first item for everyone.
+- Known limitations: Play Next on the last song of a Qobuz queue looks identical to Add to Queue. Reordering in a player isn't synced. Qobuz can't remove queue items (skipped instead).
 
 ## Gotchas
 

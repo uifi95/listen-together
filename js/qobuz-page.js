@@ -3,7 +3,7 @@
 // Redux store and drives it through the same actions Qobuz's own UI uses.
 // Qobuz plays audio through a native engine, so there is no <audio> to touch.
 (() => {
-  const VERSION = 4;
+  const VERSION = 5;
   if (window.__lt && window.__lt.version === VERSION) return 'already installed';
   if (window.__lt && window.__lt.dispose) window.__lt.dispose();
 
@@ -48,6 +48,45 @@
     wrapped.__lt = true;
     window.fetch = wrapped;
   }
+
+  // Qobuz's own "add album to queue" actions fetch the album's track list
+  // from its API. A request for a marked album id ("<album>ltq<n>") gets the
+  // real album with its track list swapped for the songs the room queued,
+  // so those actions queue exactly those songs. (Earlier bridges wrapped
+  // fetch without this, so it's wrapped again on top.)
+  const overrides = (window.__ltOverrides = window.__ltOverrides || new Map());
+  if (window.fetch.__lt !== 2) {
+    const inner = window.fetch;
+    const wrapped = function (input, init) {
+      try {
+        const url = typeof input === 'string' ? input : input && input.url;
+        if (url && url.includes('album/get')) {
+          const u = new URL(url);
+          const m = /^(.+)ltq(\d+)$/.exec(u.searchParams.get('album_id') || '');
+          const o = m && window.__ltOverrides.get(m[2]);
+          if (o) {
+            u.searchParams.set('album_id', m[1]);
+            return inner.call(this, u.toString(), init).then(async (res) => {
+              if (!res.ok) return res;
+              const j = await res.json();
+              j.track_ids = o.ids.map(Number);
+              return new Response(JSON.stringify(j), { status: 200, headers: { 'Content-Type': 'application/json' } });
+            });
+          }
+        }
+      } catch (e) {}
+      return inner.apply(this, arguments);
+    };
+    wrapped.__lt = 2;
+    window.fetch = wrapped;
+  }
+  let overrideSeq = 0;
+  const marked = (albumId, ids) => {
+    const n = String(Date.now()) + String(++overrideSeq);
+    overrides.set(n, { ids });
+    setTimeout(() => overrides.delete(n), 60000);
+    return `${albumId}ltq${n}`;
+  };
 
   const names = (people) => (people || []).map((a) => a.name && a.name.display).filter(Boolean).join(', ');
   const titleOf = (t) => (t.version ? `${t.title} (${t.version})` : t.title);
@@ -139,16 +178,56 @@
   // The play queue, for the shared queue: the app notices what someone
   // added ("Add to Queue" / "Play Next") by comparing item keys.
   let queueVersion = 0;
-  let lastItems = null;
+  let last = {};
   const unsubscribe = store.subscribe(() => {
-    const items = (store.getState().playqueue || {}).items;
-    if (items !== lastItems) { lastItems = items; queueVersion++; }
+    const pq = store.getState().playqueue || {};
+    if (pq.items !== last.items || pq.shuffledItems !== last.shuffledItems || pq.currentIndex !== last.currentIndex) {
+      last = pq;
+      queueVersion++;
+    }
   });
   const items = () => (store.getState().playqueue || {}).items || [];
   // Qobuz renumbers items (q1, q2…) when a queue is replaced, so the key
   // also carries the context, which each add/insert gets anew.
   const keyOf = (it) => `${it.queueItemId}|${it.trackId}|${it.contextUuid || ''}`;
-  const queueKeys = () => items().map(keyOf);
+  // keys: every queued song; upcoming: the ones still to play, in play
+  // order; current: what is playing now.
+  const queueState = () => {
+    const pq = store.getState().playqueue || {};
+    const list = (pq.shuffled ? pq.shuffledItems : pq.items) || [];
+    const ci = typeof pq.currentIndex === 'number' ? pq.currentIndex : -1;
+    return {
+      keys: items().map(keyOf),
+      upcoming: ci >= 0 ? list.slice(ci + 1).map(keyOf) : [],
+      current: ci >= 0 && list[ci] ? keyOf(list[ci]) : null,
+    };
+  };
+
+  // Queue the room's songs: after the current one (Play Next) or at the end.
+  // All tracks of one call must share an album id for the marked request;
+  // any of them works, since only the track list is used.
+  const addToQueue = ({ tracks, next }) => {
+    if (!items().length) return { ok: false, error: 'nothing is playing' };
+    const albumId = tracks && tracks[0] && tracks[0].albumId;
+    if (!albumId) return { ok: false, error: 'no album id' };
+    store.dispatch({
+      type: next ? 'INSERT_INTO_PLAYQUEUE_FROM_RELEASE_EPIC' : 'COMPLETE_PLAYQUEUE_FROM_RELEASE_EPIC',
+      releaseId: marked(albumId, tracks.map((t) => t.id)),
+      origin: { type: 'album', id: albumId, from: 'Search/Tracks' },
+    });
+    return { ok: true };
+  };
+
+  // Play just this one track (a queue of one), unlike playTrack's album.
+  const playOnly = ({ trackId, albumId }) => {
+    store.dispatch({
+      type: 'REPLACE_PLAYQUEUE_FROM_RELEASE_EPIC',
+      releaseId: marked(albumId, [trackId]),
+      index: 0,
+      origin: { type: 'album', id: albumId, from: 'Search/Tracks' },
+    });
+    return { ok: true };
+  };
   const queueTracks = (keys) => {
     const dict = store.getState().dictionnary || {};
     const byKey = new Map(items().map((it) => [keyOf(it), it]));
@@ -174,6 +253,6 @@
     return out;
   };
 
-  window.__lt = { version: VERSION, state, search, playTrack, seek, queueKeys, queueTracks, dispose: unsubscribe };
+  window.__lt = { version: VERSION, state, search, playTrack, playOnly, seek, queueState, queueTracks, addToQueue, dispose: unsubscribe };
   return 'installed';
 })();

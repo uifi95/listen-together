@@ -22,7 +22,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // app and a hosted room ends with it. The Dock icon brings the window back.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
+    private var signalSources: [DispatchSourceSignal] = []
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // `kill`, logout and Ctrl-C quit normally, so a hosted room's tunnel
+        // is stopped instead of left running.
+        for sig in [SIGTERM, SIGINT, SIGHUP] {
+            signal(sig, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+            source.setEventHandler { NSApp.terminate(nil) }
+            source.resume()
+            signalSources.append(source)
+        }
+
         // Test runs stay out of the way: no window in front.
         if SyncEngine.testDir != nil {
             DispatchQueue.main.async { NSApp.windows.forEach { $0.orderOut(nil) }; NSApp.hide(nil) }

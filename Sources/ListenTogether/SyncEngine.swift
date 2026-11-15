@@ -351,6 +351,8 @@ final class SyncEngine: ObservableObject {
             do { try await apple.evaluateForTest(String(line.dropFirst(9))) } catch { print("test error: \(error)") }
         } else if line == "skip" {
             await playFromQueue(nil)
+        } else if line == "create-room" {
+            createRoom()
         }
     }
 

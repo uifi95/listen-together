@@ -20,6 +20,7 @@ final class CloudflareTunnel {
         guard let binary = Self.findBinary() else {
             throw PlayerError("Creating a room needs cloudflared, which is missing from this build. Install it with: brew install cloudflared")
         }
+        Self.stopOrphans(of: binary)
         let p = Process()
         p.executableURL = binary
         p.arguments = ["tunnel", "--no-autoupdate", "--url", "http://127.0.0.1:\(localPort)"]
@@ -66,6 +67,18 @@ final class CloudflareTunnel {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
         }
         return false
+    }
+
+    /// Tunnels left running by an earlier copy of the app that didn't quit
+    /// normally (killed, crashed): their parent is gone (adopted by launchd).
+    /// Only this binary's tunnels, so a cloudflared started elsewhere is safe.
+    private static func stopOrphans(of binary: URL) {
+        let pkill = Process()
+        pkill.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        let pattern = "^" + NSRegularExpression.escapedPattern(for: binary.path) + " tunnel "
+        pkill.arguments = ["-P", "1", "-f", pattern]
+        try? pkill.run()
+        pkill.waitUntilExit()
     }
 
     func stop() {

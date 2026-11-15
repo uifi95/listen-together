@@ -11,6 +11,7 @@ swift test                    # unit tests (needs EmbeddedJS.swift -> run ./buil
 ```
 
 - `Sources/ListenTogether/EmbeddedJS.swift` is **generated** by `build.sh` from `js/` and is gitignored. Edit the files in `js/`, never the generated file. On a fresh clone, run `./build.sh` before `swift build`/`swift test`.
+- Release: push a `v<version>` tag. `.github/workflows/release.yml` runs `./build.sh <version>` (→ `dist/ListenTogether-<version>-macos.zip`, version written into Info.plist), `swift test`, `gh release create --generate-notes`, and pushes the cask from `packaging/cask.sh` to `uifi95/homebrew-tap` (needs the `HOMEBREW_TAP_TOKEN` secret). Same scheme as the sibling project `qobuz-now-playing`. Work goes through feature branches and PRs (`feat:` / `fix:` / `docs:` commit prefixes).
 - Toolchain: Swift tools version 5.10, built with a Swift 6 toolchain. Ad-hoc signed (`codesign --sign -`), no notarization; recipients must right-click → Open the first time.
 - Env vars: `LT_PROFILE=<name>` (separate UserDefaults suite, to run two copies on one Mac), `LT_DEBUG=1` (prints player state to stdout), `LT_TEST_DIR=<dir>` (test-command hook; also hides windows).
 - CLI mode: `ListenTogether --host-room "Name"` hosts a room (relay + tunnel) without the player.

@@ -18,14 +18,30 @@ A Mac app for two people to listen to the same song at the same moment, even whe
 - **Qobuz.** Qobuz has no scripting support. The app sends Qobuz's Electron main process `SIGUSR1`, which opens Node's inspector on 127.0.0.1. Through it, the app installs `js/qobuz-host.js` and `js/qobuz-page.js`. These read the player from Qobuz's Redux store, play tracks with `REPLACE_PLAYQUEUE_FROM_RELEASE_EPIC`, seek with the player bar's `seek` and play/pause through the media-key IPC. Search uses the Qobuz API with the app's own credentials. This works alongside `qobuz-now-playing`. **A Qobuz update could break it.** It was tested against Qobuz 8.3.0.
 - **Apple Music.** Music.app can't be told to play a catalog song. Instead, the app hosts the official web player (music.apple.com) in a window and drives its MusicKit instance through `js/apple.js`. Sign in once in that window; without a subscription you only get 30-second previews. WebKit plays that audio in a shared system helper process, not in ListenTogether's own, so per-app volume tools can't reach it. Use the app's volume slider (⌘↑ / ⌘↓) instead. It follows a cubic curve (50% ≈ −18 dB), because a linear slider barely changes how loud it sounds until it's near zero. In mixers like Vorssaint, this audio appears under **ListenTogether**, not Apple Music. Volume is per person and never synced. It's saved and applied again whenever the web player reloads, since MusicKit resets to 50% on load.
 
+## Install
+
+With [Homebrew](https://brew.sh):
+
+```sh
+brew install --cask uifi95/tap/listen-together
+```
+
+This also installs `cloudflared`, which Create Room needs. Update with `brew upgrade --cask listen-together`.
+
+Without Homebrew, download `ListenTogether-<version>-macos.zip` from the [latest release](https://github.com/uifi95/listen-together/releases/latest), unzip it and move the app to Applications. It's signed ad hoc, not notarized, so the first time right-click it and choose **Open** (or allow it under System Settings → Privacy & Security).
+
 ## Build and run
 
 ```sh
 ./build.sh                         # -> build/ListenTogether.app + .zip (universal, ad-hoc signed)
 OUT=build/next ./build.sh          # build elsewhere, e.g. while build/ is running
 open build/ListenTogether.app
-swift test                         # matcher tests
+swift test                         # unit tests (run ./build.sh once first: it generates EmbeddedJS.swift)
 ```
+
+## Release
+
+Push a tag such as `v1.2.0`. The `release` workflow (`.github/workflows/release.yml`) runs `./build.sh <version>` to build `dist/ListenTogether-<version>-macos.zip` (universal) and runs the tests, publishes the zip as a GitHub release, and updates `Casks/listen-together.rb` in [uifi95/homebrew-tap](https://github.com/uifi95/homebrew-tap) (see the workflow for the token it needs). `packaging/cask.sh` generates the cask.
 
 ## Relay
 

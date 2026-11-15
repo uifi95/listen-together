@@ -2,7 +2,7 @@
 // Evaluated in the music.apple.com web player that the app hosts in a
 // WKWebView. Drives the page's own MusicKit instance.
 (() => {
-  const VERSION = 4;
+  const VERSION = 5;
   // Changes whenever the page (and so the player's volume) was reloaded.
   const BRIDGE = Math.random().toString(36).slice(2);
   if (window.__lt && window.__lt.version === VERSION) return 'already installed';
@@ -38,26 +38,55 @@
 
   // The play queue, for the shared queue: MusicKit keeps the same item
   // objects when songs are added and makes new ones when the queue is
-  // replaced, so each object gets a key.
+  // replaced, so each object gets a key. Autoplay suggestions (∞) are left
+  // out: nobody queued them.
   const keys = new WeakMap();
   let nextKey = 0;
   const keyOf = (x) => { if (!keys.has(x)) keys.set(x, 'a' + (++nextKey)); return keys.get(x); };
+  // How each item was added (true = Play Next, false = Add to Queue). The
+  // order alone can't tell: shared songs start as a one-song queue, where
+  // Play Next also lands at the end, and Add to Queue goes in before the
+  // autoplay songs, so it looks inserted.
+  const addedAs = new Map();
   let queueVersion = 0;
   let listeningTo = null;
+  const wrap = (i, name, playNext) => {
+    const orig = i[name];
+    if (typeof orig !== 'function' || orig.__lt === VERSION) return;
+    const wrapped = async function (...args) {
+      const before = new Set(i.queue.items.map(keyOf));
+      const result = await orig.apply(this, args);
+      for (const x of i.queue.items) {
+        const key = keyOf(x);
+        if (!before.has(key)) addedAs.set(key, playNext);
+      }
+      queueVersion++;
+      return result;
+    };
+    wrapped.__lt = VERSION;
+    i[name] = wrapped;
+  };
   const listen = (i) => {
     if (listeningTo === i) return;
     listeningTo = i;
     i.addEventListener('queueItemsDidChange', () => { queueVersion++; });
+    wrap(i, 'playNext', true);
+    wrap(i, 'playLater', false);
     queueVersion++;
   };
-  const queueKeys = () => need().queue.items.map(keyOf);
+  const userItems = (q) => q.userAddedItems || q.items;
+  const queueKeys = () => userItems(need().queue).map(keyOf);
   const queueTracks = (wanted) => {
-    const byKey = new Map(need().queue.items.map((x) => [keyOf(x), x]));
+    const q = need().queue;
+    const all = q.items;
+    const byKey = new Map(userItems(q).map((x) => [keyOf(x), x]));
     const out = {};
     for (const key of wanted || []) {
       const x = byKey.get(key);
-      if (!x) continue;
+      // Gone, or already playing (the web app's "Play" is Play Next + skip).
+      if (!x || all.indexOf(x) <= q.position) continue;
       const t = toTrack(x);
+      if (t.title && addedAs.has(key)) t.playNext = addedAs.get(key);
       out[key] = t.title ? t : null;
     }
     return out;

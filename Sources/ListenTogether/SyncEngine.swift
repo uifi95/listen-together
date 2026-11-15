@@ -511,7 +511,8 @@ final class SyncEngine: ObservableObject {
                 guard let entry = tracks[p.key] else { return true }        // no longer in the app's queue
                 guard let track = entry else { return Date().timeIntervalSince(p.since) > 15 }  // still loading
                 added.append(QueueItem(id: UUID().uuidString, track: track, addedBy: name,
-                                       addedAt: p.addedAt, seq: p.seq, playNext: p.playNext))
+                                       addedAt: p.addedAt, seq: p.seq,
+                                       playNext: player.addedAsPlayNext(p.key) ?? p.playNext))
                 return true
             }
             guard !added.isEmpty else { return }

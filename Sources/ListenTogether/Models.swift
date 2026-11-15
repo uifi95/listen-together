@@ -79,6 +79,14 @@ protocol MusicPlayer: AnyObject {
     func queueKeys() async throws -> [String]
     /// Tracks for queue keys; nil for items whose details haven't loaded yet.
     func queueTracks(_ keys: [String]) async throws -> [String: TrackInfo?]
+    /// How the app said an item was added (true = Play Next), when it says;
+    /// valid for keys from the last `queueTracks` call. Otherwise the
+    /// engine guesses from where the item landed.
+    func addedAsPlayNext(_ key: String) -> Bool?
+}
+
+extension MusicPlayer {
+    func addedAsPlayNext(_ key: String) -> Bool? { nil }
 }
 
 struct PlayerError: LocalizedError {

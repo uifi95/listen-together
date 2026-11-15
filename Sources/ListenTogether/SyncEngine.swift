@@ -88,6 +88,10 @@ final class SyncEngine: ObservableObject {
     /// loading right after joining): try again at this time.
     private var followRetryAt: Date?
     private var followFailures = 0
+    /// Since when the local player has been empty while the room plays a
+    /// song, and how often we re-followed that room state (by its `at`).
+    private var emptySince: Date?
+    private var refollowed: (at: Double, count: Int) = (0, 0)
     private var applying = false
     private var ticking = false
     private var loop: Task<Void, Never>?
@@ -364,6 +368,10 @@ final class SyncEngine: ObservableObject {
             await playFromQueue(nil)
         } else if line == "create-room" {
             createRoom()
+        } else if line.hasPrefix("join ") {
+            join(link: String(line.dropFirst(5)))
+        } else if line == "leave" {
+            disconnectRelay()
         }
     }
 
@@ -393,9 +401,14 @@ final class SyncEngine: ObservableObject {
                 // (picked up by drainRemote when this tick ends).
                 if let s = shared, s.from != myId { pendingRemote = s; return }
             }
+            if let s = needsRefollow(snap) {
+                note("Catching up with \(s.fromName ?? "the room"): \(s.track?.summary ?? "")")
+                pendingRemote = s
+                return
+            }
             if service == .appleMusic, snap.ready { await syncAppleVolume(snap) }
             if Self.debug {
-                let line = "player \(service.rawValue) ready=\(snap.ready) track=\(snap.track?.title ?? "-") playing=\(snap.playing) volume=\(snap.volume.map { String(format: "%.2f", $0) } ?? "-") slider=\(String(format: "%.2f", appleVolume))"
+                let line = "player \(service.rawValue) ready=\(snap.ready) auth=\(snap.authorized) track=\(snap.track?.title ?? "-") playing=\(snap.playing) volume=\(snap.volume.map { String(format: "%.2f", $0) } ?? "-") slider=\(String(format: "%.2f", appleVolume))"
                 if line != lastDebugLine { lastDebugLine = line; print(line); fflush(stdout) }
             }
             await watchAppQueue(snap)
@@ -463,6 +476,29 @@ final class SyncEngine: ObservableObject {
     /// someone starts in an idle room never reached the other person).
     nonisolated static func waitsForLoad(base: PlayerSnapshot?, snap: PlayerSnapshot) -> Bool {
         snap.loading && (base == nil || snap.track?.id != base?.track?.id)
+    }
+
+    /// The room is playing someone else's song but this player has had
+    /// nothing loaded for a few seconds: the song we started was lost (the
+    /// Apple Music page can reset itself right after loading, e.g. while it
+    /// restores the sign-in). Follow it again, a few times at most, and not
+    /// near the song's end, where an empty player is normal.
+    private func needsRefollow(_ snap: PlayerSnapshot) -> SharedState? {
+        guard snap.ready, snap.track == nil, !snap.loading, pendingRemote == nil,
+              let s = shared, s.from != myId, let t = s.track, !partners.isEmpty else {
+            emptySince = nil
+            return nil
+        }
+        let left = t.durationMs - s.expectedPosition(atRelayTime: relay.relayNow)
+        guard t.durationMs == 0 || left > 8000 else { return nil }
+        let since = emptySince ?? Date()
+        emptySince = since
+        guard Date().timeIntervalSince(since) >= 3 else { return nil }
+        if refollowed.at != s.at { refollowed = (s.at, 0) }
+        guard refollowed.count < 3 else { return nil }
+        refollowed.count += 1
+        emptySince = nil
+        return s
     }
 
     private func queueOverdue() -> Bool {

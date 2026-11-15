@@ -1,5 +1,7 @@
 # ListenTogether
 
+<img src="AppIcon.png" width="128" alt="ListenTogether icon: pixel-art headphones with one cyan and one amber cup, a heart under the band, and two cables joining into one plug">
+
 A Mac app for two people to listen to the same song at the same moment, even when one uses **Apple Music** and the other uses **Qobuz**. Play, pause, seek and track changes made by either person are copied to the other.
 
 ## How it works
@@ -26,7 +28,7 @@ With [Homebrew](https://brew.sh):
 brew install --cask uifi95/tap/listen-together
 ```
 
-This also installs `cloudflared`, which Create Room needs. Update with `brew upgrade --cask listen-together`.
+Update with `brew upgrade --cask listen-together`.
 
 Without Homebrew, download `ListenTogether-<version>-macos.zip` from the [latest release](https://github.com/uifi95/listen-together/releases/latest), unzip it and move the app to Applications. It's signed ad hoc, not notarized, so the first time right-click it and choose **Open** (or allow it under System Settings → Privacy & Security).
 
@@ -55,9 +57,9 @@ To use it from anywhere, deploy `relay/` to any Node host that supports WebSocke
 
 ## Use
 
-**Create a room (easiest).** Install cloudflared first with `brew install cloudflared`. Then, in the app:
+**Create a room (easiest).** Nothing to install: the app includes Cloudflare's `cloudflared`.
 
-1. Click **Create Room**. The app runs the relay itself (`HostServer.swift`) and opens a Cloudflare quick tunnel to it (`CloudflareTunnel.swift`). No account is needed.
+1. Click **Create Room**. The app runs the relay itself (`HostServer.swift`) and opens a Cloudflare quick tunnel to it with its bundled `cloudflared` (`CloudflareTunnel.swift`), so your friend can reach it from the internet. No account is needed.
 2. Click **Copy Link** and send it. It looks like `https://….trycloudflare.com/join/<room>`.
 3. Your friend opens the link. The page has a download for the app and an **Open in ListenTogether** button, which uses the `listentogether://` link type. They can also paste the link into the **Join with Link** tab.
 
@@ -87,3 +89,4 @@ Headless host, without the player: `build/ListenTogether.app/Contents/MacOS/List
 | `Sources/ListenTogether/RelayClient.swift` | WebSocket, reconnects, clock sync |
 | `js/` | The bridges injected into Qobuz and the web player (embedded by `build.sh`) |
 | `relay/server.mjs` | Relay server |
+| `packaging/make_icon.py` | Draws the pixel-art icon (`AppIcon.icns`, `AppIcon.png`); edit the grid there and re-run it |

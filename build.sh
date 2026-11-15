@@ -37,6 +37,27 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$(swift build -c release "${arch[@]}" --show-bin-path)/ListenTogether" "$app/Contents/MacOS/"
 [ -f AppIcon.icns ] && cp AppIcon.icns "$app/Contents/Resources/"
 
+# Bundle cloudflared so Create Room needs nothing installed. Pinned version,
+# checked against the SHA-256 GitHub reports for each release asset; both
+# architectures merged into one file. Cached in .build/ between builds.
+CF_VERSION=2026.10.7
+CF_SHA_arm64=3586ccf397e98e5f437e60e7c307ca6ac463e110580503af8bb8e6f9ebf831bd
+CF_SHA_amd64=02f3edfd87684dd5b705607688e4eb4b323f6e777b81e7b3a85af556aa356848
+cf_dir=.build/cloudflared-$CF_VERSION
+if [ ! -x "$cf_dir/cloudflared" ]; then
+  mkdir -p "$cf_dir"
+  for a in arm64 amd64; do
+    tgz="$cf_dir/cloudflared-darwin-$a.tgz"
+    curl -fsSL -o "$tgz" "https://github.com/cloudflare/cloudflared/releases/download/$CF_VERSION/cloudflared-darwin-$a.tgz"
+    want=CF_SHA_$a
+    echo "${!want}  $tgz" | shasum -a 256 -c - >/dev/null || { echo "error: cloudflared $a checksum mismatch" >&2; rm -f "$tgz"; exit 1; }
+    mkdir -p "$cf_dir/$a" && tar -xzf "$tgz" -C "$cf_dir/$a"
+  done
+  lipo -create "$cf_dir/arm64/cloudflared" "$cf_dir/amd64/cloudflared" -output "$cf_dir/cloudflared"
+fi
+mkdir -p "$app/Contents/Helpers"
+cp "$cf_dir/cloudflared" "$app/Contents/Helpers/cloudflared"
+
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

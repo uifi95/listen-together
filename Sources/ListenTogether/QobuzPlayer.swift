@@ -229,7 +229,14 @@ final class QobuzPlayer: MusicPlayer {
         if !switched { _ = try await call("playTrack", ["trackId": t.id, "albumId": albumId]) }
         // Wait for Qobuz to switch to the track and start streaming it.
         var snap = try await snapshot()
+        var pressedPlay = false
         while !(snap.track?.id == t.id && !snap.loading && snap.playing) && Date().timeIntervalSince(started) < 10 {
+            // Replacing the queue keeps Qobuz's play/pause state: if it was
+            // paused, start it.
+            if shouldPlay && !pressedPlay && snap.track?.id == t.id && !snap.loading && !snap.playing {
+                pressedPlay = true
+                try await play()
+            }
             try await Task.sleep(nanoseconds: 150_000_000)
             snap = try await snapshot()
         }

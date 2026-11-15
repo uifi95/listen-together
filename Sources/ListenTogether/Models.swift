@@ -75,14 +75,34 @@ protocol MusicPlayer: AnyObject {
     func candidates(for track: TrackInfo) async throws -> [TrackInfo]
     /// Start `track` (a track of this service) at `positionMs`.
     func load(_ track: TrackInfo, positionMs: Int, play: Bool) async throws
-    /// Keys of the items in the app's own play queue, in play order.
-    func queueKeys() async throws -> [String]
+    /// The app's own play queue, as item keys.
+    func queueState() async throws -> AppQueue
     /// Tracks for queue keys; nil for items whose details haven't loaded yet.
     func queueTracks(_ keys: [String]) async throws -> [String: TrackInfo?]
     /// How the app said an item was added (true = Play Next), when it says;
     /// valid for keys from the last `queueTracks` call. Otherwise the
     /// engine guesses from where the item landed.
     func addedAsPlayNext(_ key: String) -> Bool?
+    /// Put these tracks (of this service) in the app's queue, after the
+    /// current song (`next`) or at the end. Returns the keys of the new
+    /// items by track id when the app tells right away.
+    func addToQueue(_ tracks: [TrackInfo], next: Bool) async throws -> [String: String]
+    /// Take these upcoming items out of the app's queue. False if the app
+    /// can't (they are skipped when they come up instead).
+    func removeFromQueue(_ keys: [String]) async throws -> Bool
+    /// Jump to an upcoming item of the app's queue. False if the app can't
+    /// jump there (the caller loads the track instead).
+    func playQueued(_ key: String, in queue: AppQueue) async throws -> Bool
+    /// Move on to the next item of the app's queue.
+    func skipToNext() async throws
+}
+
+/// The app's own play queue: `keys` are all its items (to spot additions),
+/// `upcoming` the ones still to play, in order, `current` the playing one.
+struct AppQueue: Equatable {
+    var keys: [String] = []
+    var upcoming: [String] = []
+    var current: String?
 }
 
 extension MusicPlayer {

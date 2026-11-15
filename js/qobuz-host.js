@@ -38,6 +38,16 @@
         }
         return JSON.stringify({ ok: true });
       }
+      if (name === 'next') {
+        // Qobuz's own "next" media key; wait until the queue has moved on.
+        const before = (await run(wc, 'window.__lt.queueState()')).current;
+        wc.send('media-controls', 'next');
+        for (let i = 0; i < 30; i++) {
+          await sleep(50);
+          if ((await run(wc, 'window.__lt.queueState()')).current !== before) break;
+        }
+        return JSON.stringify({ ok: true });
+      }
       const r = await run(wc, `window.__lt.${name}(${JSON.stringify(arg === undefined ? null : arg)})`);
       return JSON.stringify(r === undefined ? null : r);
     } catch (e) {

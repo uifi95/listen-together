@@ -2,7 +2,7 @@
 // Evaluated in the music.apple.com web player that the app hosts in a
 // WKWebView. Drives the page's own MusicKit instance.
 (() => {
-  const VERSION = 5;
+  const VERSION = 6;
   // Changes whenever the page (and so the player's volume) was reloaded.
   const BRIDGE = Math.random().toString(36).slice(2);
   if (window.__lt && window.__lt.version === VERSION) return 'already installed';
@@ -70,12 +70,53 @@
     if (listeningTo === i) return;
     listeningTo = i;
     i.addEventListener('queueItemsDidChange', () => { queueVersion++; });
+    i.addEventListener('queuePositionDidChange', () => { queueVersion++; });
     wrap(i, 'playNext', true);
     wrap(i, 'playLater', false);
     queueVersion++;
   };
   const userItems = (q) => q.userAddedItems || q.items;
-  const queueKeys = () => userItems(need().queue).map(keyOf);
+  // keys: every queued song (for spotting additions); upcoming: the ones
+  // still to play, in order; current: what is playing now.
+  const queueState = () => {
+    const q = need().queue;
+    const all = q.items;
+    const user = userItems(q);
+    const cur = all[q.position];
+    return {
+      keys: user.map(keyOf),
+      upcoming: user.filter((x) => all.indexOf(x) > q.position).map(keyOf),
+      current: cur ? keyOf(cur) : null,
+    };
+  };
+
+  // The room's queue, copied into this player's own queue.
+  const addToQueue = async ({ ids, next }) => {
+    const i = need();
+    if (!i.queue.items.length || i.queue.position < 0) return { ok: false, error: 'nothing is playing' };
+    const before = new Set(i.queue.items.map(keyOf));
+    const songs = (ids || []).map(String);
+    if (next) await i.playNext({ songs }); else await i.playLater({ songs });
+    const added = i.queue.items.filter((x) => !before.has(keyOf(x)));
+    return { ok: true, added: added.map((x) => ({ key: keyOf(x), id: toTrack(x).id })) };
+  };
+  const removeFromQueue = (wanted) => {
+    const q = need().queue;
+    if (typeof q.removeQueueItems !== 'function') return { ok: false };
+    const set = new Set(wanted || []);
+    const pos = q.position;
+    q.removeQueueItems((qi, idx) => idx > pos && !!qi && set.has(keyOf(qi.item)));
+    queueVersion++;
+    return { ok: true };
+  };
+  const playQueued = async (key) => {
+    const i = need();
+    const idx = i.queue.items.findIndex((x) => keyOf(x) === key);
+    if (idx < 0) return { ok: false };
+    await i.changeToMediaAtIndex(idx);
+    return { ok: true };
+  };
+  const next = async () => { await need().skipToNextItem(); return { ok: true }; };
   const queueTracks = (wanted) => {
     const q = need().queue;
     const all = q.items;
@@ -165,6 +206,6 @@
   };
   const authorize = async () => { await need().authorize(); return { ok: true }; };
 
-  window.__lt = { version: VERSION, state, search, playSong, play, pause, seek, setVolume, authorize, queueKeys, queueTracks };
+  window.__lt = { version: VERSION, state, search, playSong, play, pause, seek, setVolume, authorize, queueState, queueTracks, addToQueue, removeFromQueue, playQueued, next };
   return 'installed';
 })();

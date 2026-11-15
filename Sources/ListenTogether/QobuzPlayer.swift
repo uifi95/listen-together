@@ -151,9 +151,37 @@ final class QobuzPlayer: MusicPlayer {
     func play() async throws { _ = try await call("play") }
     func pause() async throws { _ = try await call("pause") }
 
-    func queueKeys() async throws -> [String] {
-        (try await call("queueKeys") as? [String]) ?? []
+    func queueState() async throws -> AppQueue {
+        guard let d = try await call("queueState") as? [String: Any] else { return AppQueue() }
+        return AppQueue(keys: d["keys"] as? [String] ?? [], upcoming: d["upcoming"] as? [String] ?? [],
+                        current: d["current"] as? String)
     }
+
+    /// Qobuz queues them a moment later (it fetches the list first), so no
+    /// keys come back; the engine recognizes the new items by track id.
+    func addToQueue(_ tracks: [TrackInfo], next: Bool) async throws -> [String: String] {
+        let usable = tracks.filter { $0.albumId != nil }
+        guard !usable.isEmpty else { throw PlayerError("Qobuz track without an album") }
+        let list = usable.map { ["id": $0.id, "albumId": $0.albumId ?? ""] }
+        _ = try await call("addToQueue", ["tracks": list, "next": next])
+        return [:]
+    }
+
+    /// Qobuz's remove action isn't reachable from outside.
+    func removeFromQueue(_ keys: [String]) async throws -> Bool { false }
+
+    /// Only the next item: Qobuz's "next" media key gets there.
+    func playQueued(_ key: String, in queue: AppQueue) async throws -> Bool {
+        guard queue.upcoming.first == key else { return false }
+        try await skipToNext()
+        return true
+    }
+
+    func skipToNext() async throws { _ = try await call("next") }
+
+    /// Whether playing a single track (instead of its whole album) works
+    /// with this Qobuz version; nil until tried.
+    private var playOnlyWorks: Bool?
 
     func queueTracks(_ keys: [String]) async throws -> [String: TrackInfo?] {
         guard !keys.isEmpty, let dict = try await call("queueTracks", keys) as? [String: Any] else { return [:] }
@@ -184,7 +212,21 @@ final class QobuzPlayer: MusicPlayer {
             return try await load(found, positionMs: positionMs, play: shouldPlay)
         }
         let started = Date()
-        _ = try await call("playTrack", ["trackId": t.id, "albumId": albumId])
+        // Just the track, so the room's queue (copied in after it) is what
+        // plays next, not the rest of its album. Falls back to the album.
+        var switched = false
+        if playOnlyWorks != false {
+            _ = try await call("playOnly", ["trackId": t.id, "albumId": albumId])
+            for _ in 0..<20 {
+                try await Task.sleep(nanoseconds: 150_000_000)
+                if try await snapshot().track?.id == t.id { switched = true; break }
+            }
+            if playOnlyWorks == nil {
+                playOnlyWorks = switched
+                LogFile.write("qobuz: single-track play \(switched ? "works" : "doesn't work, using albums")")
+            }
+        }
+        if !switched { _ = try await call("playTrack", ["trackId": t.id, "albumId": albumId]) }
         // Wait for Qobuz to switch to the track and start streaming it.
         var snap = try await snapshot()
         while !(snap.track?.id == t.id && !snap.loading && snap.playing) && Date().timeIntervalSince(started) < 10 {

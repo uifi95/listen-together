@@ -24,7 +24,9 @@ final class SyncEngine: ObservableObject {
             playerConnected = false
             baseline = nil
             appQueueVersion = nil
-            appQueueKeys = []
+            appQueue = nil
+            mirror.reset()
+            advancedInto = nil
             pendingAdds = []
             local = PlayerSnapshot(ready: false)
             playerStatus = "Connecting to \(service.displayName)…"
@@ -75,7 +77,12 @@ final class SyncEngine: ObservableObject {
     // Shared queue
     @Published private(set) var queue = SharedQueue()
     private var appQueueVersion: Int?
-    private var appQueueKeys: [String] = []
+    private var appQueue: AppQueue?
+    /// The app's own queue holds a copy of the room's queue.
+    private var mirror = QueueMirror()
+    private var nextMirrorAt = Date.distantPast
+    /// The app moved on to this song of the room's queue by itself.
+    private var advancedInto: (item: QueueItem, at: Date)?
     private struct PendingAdd { var key: String; var playNext: Bool; var addedAt: Double; var seq: Int; var since: Date }
     private var pendingAdds: [PendingAdd] = []
 
@@ -160,6 +167,7 @@ final class SyncEngine: ObservableObject {
         followRetryAt = nil
         followFailures = 0
         queue = SharedQueue()
+        mirror.reset()
         Self.defaults.set(true, forKey: "inRoom")
         relay.connect(to: url)
     }
@@ -171,6 +179,8 @@ final class SyncEngine: ObservableObject {
         peers = []
         myId = nil
         shared = nil
+        mirror.reset()
+        advancedInto = nil
     }
 
     // MARK: Hosting a room on this Mac
@@ -222,6 +232,7 @@ final class SyncEngine: ObservableObject {
                 if let local = RelayClient.makeURL(base: "ws://127.0.0.1:\(port)", room: code, name: name) {
                     shared = nil
                     queue = SharedQueue()
+                    mirror.reset()
                     relay.connect(to: local)
                 }
                 // A tunnel address dies with the app; don't rejoin it on launch.
@@ -343,6 +354,19 @@ final class SyncEngine: ObservableObject {
             return
         }
 
+        // It's in this app's queue already (the room's queue is copied
+        // there): jump to it, which keeps the rest of the queue.
+        if let app = appQueue, let key = queuedKey(for: target, in: app),
+           try await player.playQueued(key, in: app) {
+            if announce { note("\(who) is playing \(target.summary)") }
+            LogFile.write("apply: jumped to queued \(key)")
+            try await Task.sleep(nanoseconds: 400_000_000)
+            let expected = s.expectedPosition(atRelayTime: relay.relayNow)
+            if expected > 2000 { try await player.seek(toMs: expected) }
+            if s.playing { try await player.play() } else { try await player.pause() }
+            return
+        }
+
         if announce { note("\(who) is playing \(target.summary)") }
         var match: TrackInfo?
         if target.service == service {
@@ -372,7 +396,10 @@ final class SyncEngine: ObservableObject {
         let line = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if Self.debug { print("test: \(line.prefix(60))"); fflush(stdout) }
         if line.hasPrefix("apple-js ") {
-            do { try await apple.evaluateForTest(String(line.dropFirst(9))) } catch { print("test error: \(error)") }
+            do {
+                let result = try await apple.evaluateForTest(String(line.dropFirst(9)))
+                print("test result: \(result.map { "\($0)" } ?? "nil")"); fflush(stdout)
+            } catch { print("test error: \(error)") }
         } else if line == "skip" {
             await playFromQueue(nil)
         } else if line == "create-room" {
@@ -424,7 +451,11 @@ final class SyncEngine: ObservableObject {
             }
             await watchAppQueue(snap)
             guard !applying else { return }
+            if await skipStale(snap) { return }
+            if announceAdvance(snap) { return }
             await detectChanges(snap)
+            guard !applying else { return }
+            await mirrorQueue(snap)
         } catch {
             guard p === player else { return }
             playerConnected = false
@@ -442,7 +473,11 @@ final class SyncEngine: ObservableObject {
         let dt = Int(now.timeIntervalSince(baselineTime) * 1000)
         baseline = snap
         baselineTime = now
-        guard let base, now >= suppressUntil, !snap.loading, !base.loading else { return }
+        guard let base, !snap.loading, !base.loading else { return }
+        // Right after we moved the player ourselves, its jumps and play/pause
+        // flips are ours; a switch to a song that isn't the room's is still
+        // the user's.
+        let suppressed = now < suppressUntil
 
         // The shared song just finished here (the app moved on by itself or
         // stopped at the end): the shared queue decides what's next.
@@ -452,13 +487,16 @@ final class SyncEngine: ObservableObject {
 
         var changed = false
         if snap.track?.id != base.track?.id {
-            if baseEnded && baseWasShared && !queue.isEmpty {
+            if !suppressed && baseEnded && baseWasShared && !queue.isEmpty {
                 await playFromQueue(nil)
                 return
             }
             // A new track that isn't the shared one: the user (or the end of
             // the previous track) picked it here.
             if let t = snap.track, !Matcher.isSame(t, shared?.track) { changed = true }
+            if suppressed && !changed { return }
+        } else if suppressed {
+            return
         } else if snap.playing != base.playing {
             let ended = !snap.playing && duration > 0 && base.positionMs > duration - 2500
             if ended && baseWasShared && !queue.isEmpty {
@@ -548,14 +586,15 @@ final class SyncEngine: ObservableObject {
                 if s.playing { try await player.play() } else { try await player.pause() }
             } else if s.playing {
                 let expected = s.expectedPosition(atRelayTime: relay.relayNow)
-                if abs(snap.positionMs - expected) > driftLimit {
-                    lastCorrection = Date()
-                    try await player.seek(toMs: expected)
-                }
+                // In sync: nothing to do (and nothing to ignore afterwards;
+                // this used to mute change detection on most ticks).
+                guard abs(snap.positionMs - expected) > driftLimit else { return }
+                lastCorrection = Date()
+                try await player.seek(toMs: expected)
             } else {
                 return
             }
-            baseline = nil
+            LogFile.write("drift: corrected (\(s.playing ? "playing" : "paused"), room at \(Self.time(s.expectedPosition(atRelayTime: relay.relayNow))), here \(Self.time(snap.positionMs)))")
             suppressUntil = Date().addingTimeInterval(1)
         } catch {
             note("Couldn't resync: \(error.localizedDescription)")
@@ -565,20 +604,22 @@ final class SyncEngine: ObservableObject {
     // MARK: Shared queue
 
     /// Notices songs added to the app's own queue ("Add to Queue" or "Play
-    /// Next") and puts them in the shared queue.
+    /// Next") and puts them in the shared queue; songs taken out of it,
+    /// skipped or played there leave the shared queue.
     private func watchAppQueue(_ snap: PlayerSnapshot) async {
         guard let version = snap.queueVersion else { return }
         do {
             if version != appQueueVersion {
-                let keys = try await player.queueKeys()
-                let firstLook = appQueueVersion == nil
+                let q = try await player.queueState()
+                let previous = appQueue
                 appQueueVersion = version
-                let previous = appQueueKeys
-                appQueueKeys = keys
-                if !firstLook {
+                appQueue = q
+                if let previous {
+                    appQueueChanged(from: previous, to: q)
                     let now = relay.relayNow
-                    for add in QueueDiff.additions(previous: previous, current: keys) {
-                        for (i, key) in add.keys.enumerated() {
+                    for add in QueueDiff.additions(previous: previous.keys, current: q.keys) {
+                        for (i, key) in add.keys.enumerated()
+                        where mirror.sharedId(forKey: key) == nil && !mirror.stale.contains(key) {
                             pendingAdds.append(PendingAdd(key: key, playNext: add.playNext, addedAt: now, seq: i, since: Date()))
                         }
                     }
@@ -590,9 +631,14 @@ final class SyncEngine: ObservableObject {
             pendingAdds.removeAll { p in
                 guard let entry = tracks[p.key] else { return true }        // no longer in the app's queue
                 guard let track = entry else { return Date().timeIntervalSince(p.since) > 15 }  // still loading
-                added.append(QueueItem(id: UUID().uuidString, track: track, addedBy: name,
-                                       addedAt: p.addedAt, seq: p.seq,
-                                       playNext: player.addedAsPlayNext(p.key) ?? p.playNext))
+                // Our own copy of a song the room queued, not a new one.
+                if mirror.claim(trackId: track.id, key: p.key) != nil { return true }
+                let item = QueueItem(id: UUID().uuidString, track: track, addedBy: name,
+                                     addedAt: p.addedAt, seq: p.seq,
+                                     playNext: player.addedAsPlayNext(p.key) ?? p.playNext)
+                mirror.keyFor[item.id] = p.key
+                mirror.resolved[item.id] = track
+                added.append(item)
                 return true
             }
             guard !added.isEmpty else { return }
@@ -603,6 +649,141 @@ final class SyncEngine: ObservableObject {
             publishQueue()
         } catch {
             // The next tick tries again.
+        }
+    }
+
+    /// Room songs whose copy left the upcoming part of the app's queue.
+    private func appQueueChanged(from previous: AppQueue, to q: AppQueue) {
+        let change = mirror.update(previous: previous, current: q)
+        if change.replaced {
+            LogFile.write("mirror: the app's queue was replaced; the room's songs go back in")
+            return
+        }
+        let items = queue.items
+        func item(_ id: String) -> QueueItem? { items.first { $0.id == id } }
+        var left = false
+        for id in change.played { if let it = item(id) { queue.remove(id); advancedInto = (it, Date()); left = true } }
+        for id in change.skipped { if let it = item(id) { queue.remove(id); note("You skipped \(it.track.summary)"); left = true } }
+        for id in change.removed {
+            if let it = item(id) { queue.remove(id); note("You took \(it.track.summary) out of the queue"); left = true }
+        }
+        // A song that started playing is announced with it (announceAdvance).
+        if left && advancedInto == nil { publishQueue() }
+    }
+
+    /// The app moved on to the next song of the room's queue by itself (the
+    /// song ended, or someone pressed next there): it's the room's song now.
+    private func announceAdvance(_ snap: PlayerSnapshot) -> Bool {
+        guard let adv = advancedInto else { return false }
+        let item = adv.item
+        if Date().timeIntervalSince(adv.at) > 10 {
+            advancedInto = nil
+            publishQueue()
+            return false
+        }
+        guard !snap.loading, let t = snap.track, Matcher.isSame(t, mirror.resolved[item.id] ?? item.track) else { return false }
+        advancedInto = nil
+        baseline = snap
+        baselineTime = Date()
+        if Matcher.isSame(shared?.track, t) {
+            publishQueue()
+        } else {
+            note("Playing from the queue: \(item.track.summary) (queued by \(item.addedBy))")
+            publish(snap, quiet: true)
+        }
+        return true
+    }
+
+    /// A copy of a song that left the room's queue, which the app couldn't
+    /// take out, just came up: move past it.
+    private func skipStale(_ snap: PlayerSnapshot) async -> Bool {
+        guard let current = appQueue?.current, mirror.stale.contains(current), snap.track != nil else { return false }
+        mirror.stale.remove(current)
+        note("Skipping \(snap.track?.summary ?? "a song"): it was taken out of the queue")
+        try? await player.skipToNext()
+        baseline = nil
+        suppressUntil = Date().addingTimeInterval(1.5)
+        return true
+    }
+
+    /// The upcoming copy, in the app's queue, of a room song.
+    private func queuedKey(for target: TrackInfo, in app: AppQueue) -> String? {
+        app.upcoming.first { key in
+            guard let id = mirror.sharedId(forKey: key), let t = mirror.resolved[id] else { return false }
+            return Matcher.isSame(t, target)
+        }
+    }
+
+    /// Makes the app's queue match the room's: adds the room's songs that
+    /// aren't there yet (found on this service) and takes out the ones that
+    /// left the room's queue.
+    private func mirrorQueue(_ snap: PlayerSnapshot) async {
+        guard relayStatus == .connected, !applying, pendingRemote == nil, snap.ready, snap.track != nil,
+              let app = appQueue, Date() >= nextMirrorAt else { return }
+        nextMirrorAt = Date().addingTimeInterval(1)
+
+        let extra = mirror.extra(in: queue.items, app: app, keep: [shared?.track])
+        if !extra.isEmpty {
+            for e in extra { mirror.keyFor[e.id] = nil }
+            let keys = extra.map(\.key)
+            let removed = (try? await player.removeFromQueue(keys)) ?? false
+            if !removed { mirror.stale.formUnion(keys) }
+            LogFile.write("mirror: \(removed ? "removed" : "will skip") \(keys.count) song(s) that left the room's queue")
+        }
+
+        for id in mirror.expirePending() {
+            if let it = queue.items.first(where: { $0.id == id }) {
+                note("Couldn't add \(it.track.summary) to \(service.displayName)'s queue")
+            }
+        }
+
+        var next: [(item: QueueItem, track: TrackInfo)] = []
+        var later: [(item: QueueItem, track: TrackInfo)] = []
+        var searches = 0
+        for item in mirror.missing(from: queue.items) {
+            var track = mirror.resolved[item.id]
+            if track == nil {
+                if item.track.service == service {
+                    track = item.track
+                } else {
+                    guard searches < 3 else { break }
+                    searches += 1
+                    do {
+                        track = Matcher.best(for: item.track, in: try await player.candidates(for: item.track))
+                    } catch {
+                        break  // try again later
+                    }
+                    guard !applying, pendingRemote == nil else { return }
+                }
+                guard let t = track else {
+                    mirror.unavailable.insert(item.id)
+                    note("\(item.track.summary) isn't on \(service.displayName), so it's not in your queue")
+                    continue
+                }
+                mirror.resolved[item.id] = t
+            }
+            if let t = track {
+                if item.playNext { next.append((item, t)) } else { later.append((item, t)) }
+            }
+        }
+
+        for (batch, isNext) in [(next, true), (later, false)] where !batch.isEmpty {
+            for b in batch { mirror.attempts[b.item.id, default: 0] += 1 }
+            do {
+                let keys = try await player.addToQueue(batch.map(\.track), next: isNext)
+                for b in batch {
+                    if let key = keys[b.track.id] { mirror.keyFor[b.item.id] = key }
+                    else { mirror.pending[b.item.id] = (b.track.id, Date()) }
+                }
+                LogFile.write("mirror: added \(batch.count) song(s) \(isNext ? "to play next" : "at the end")")
+            } catch {
+                LogFile.write("mirror: adding failed: \(error.localizedDescription)")
+                for b in batch where mirror.attempts[b.item.id, default: 0] >= QueueMirror.maxAttempts {
+                    mirror.unavailable.insert(b.item.id)
+                    note("Couldn't add \(b.item.track.summary) to \(service.displayName)'s queue")
+                }
+                nextMirrorAt = Date().addingTimeInterval(5)
+            }
         }
     }
 

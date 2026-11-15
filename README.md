@@ -67,7 +67,16 @@ The room exists while the host's app is open. The link changes each time a room 
 
 **Own relay.** In the **Own Relay** tab, enter a relay address and room code (see Relay above).
 
-**Shared queue.** Use **Add to Queue** or **Play Next** in Qobuz or the Apple Music window as usual. The app notices what was added to its own queue and puts it in the room's **Up Next** list, which both people see. When a song ends, the next one in Up Next plays for both of you, found on each person's service. Play Next songs go to the front (the latest one first, as in both apps), and Add to Queue songs go to the back in the order they were added. In the list you can play any song now, remove it, or clear the list; ⏭ skips to the next one. Every copy of the queue merges the same way (added songs minus removed ones, in a computed order), so two people queueing at the same moment don't lose anything. See `SharedQueue.swift`.
+**Shared queue.** Use your player's own queue as usual: **Add to Queue**, **Play Next**, remove a song, skip or press next in Qobuz or the Apple Music window. The room keeps one **Up Next** list, and each person's player queue holds a copy of it:
+
+- A song you queue goes into the room's list, and the app adds it to the other person's player queue, found on their service. Play Next songs go after the current song, Add to Queue songs at the end.
+- A song you take out of your queue, or skip past, leaves the room's list and the other person's queue.
+- When a song ends or someone presses next, each player moves on to the next song by itself. Both players hold the same next song, so you stay together.
+- If you start something new in your player, the room's queue is added again after it.
+
+The window's Up Next list shows the same queue and works too (play a song now, remove, clear, ⏭). Every copy of the queue merges the same way (added songs minus removed ones, in a computed order), so two people queueing at the same moment don't lose anything. See `SharedQueue.swift`.
+
+Qobuz limits: the app can add songs to Qobuz's queue but can't take them out. A song removed from the room's queue stays in Qobuz's queue and is skipped when it comes up. Songs that aren't on your service are left out of your queue.
 
 Whoever is already in the room sets what plays, and the person joining follows. After that, play, pause, seek or change tracks in Qobuz, the Apple Music window, or the app's own controls.
 

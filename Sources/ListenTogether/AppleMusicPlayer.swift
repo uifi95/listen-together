@@ -127,10 +127,17 @@ final class AppleMusicPlayer: NSObject, MusicPlayer, WKNavigationDelegate, WKUID
 
     func queueTracks(_ keys: [String]) async throws -> [String: TrackInfo?] {
         guard !keys.isEmpty, let dict = try await call("queueTracks", keys) as? [String: Any] else { return [:] }
+        if addedAs.count > 500 { addedAs.removeAll() }
         var out: [String: TrackInfo?] = [:]
-        for (key, value) in dict { out[key] = track(from: value as? [String: Any]) }
+        for (key, value) in dict {
+            let d = value as? [String: Any]
+            out[key] = track(from: d)
+            if let playNext = d?["playNext"] as? Bool { addedAs[key] = playNext }
+        }
         return out
     }
+    private var addedAs: [String: Bool] = [:]
+    func addedAsPlayNext(_ key: String) -> Bool? { addedAs[key] }
     func seek(toMs ms: Int) async throws { _ = try await call("seek", ms) }
 
     /// Test hook (LT_TEST_DIR): run JavaScript in the page.
